@@ -88,7 +88,7 @@ class Graffic < ActiveRecord::Base
     end
     
     def inherited(child)
-      child.has_one(:original, :class_name => 'Image', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
+      child.has_one(:original, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
       super
     end
     
@@ -111,7 +111,7 @@ class Graffic < ActiveRecord::Base
       @queue ||= Aws.sqs.queue(queue_name, true)
     end
     
-    # Create a size of the image.
+    # Create a size of the graphic.
     def size(name, size={})
       size[:format] ||= :png
       size.assert_valid_keys(:width, :height, :format)
@@ -119,7 +119,7 @@ class Graffic < ActiveRecord::Base
       @sizes ||= {}
       @sizes[name] = size
       
-      has_one(name, :class_name => 'Image', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
+      has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
     end
     
     # Returns all of the version names for the mode
@@ -158,7 +158,7 @@ private
       img = image.crop_resized(size[:width], size[:height])
       img.write(file_name)
       
-      i = Image.create(:file => file_name, :format => size[:format].to_s, :name => name.to_s)
+      i = Graffic.create(:file => file_name, :format => size[:format].to_s, :name => name.to_s)
       update_attribute(name, i)
       i.upload_unprocessed
       
@@ -217,19 +217,19 @@ private
   
   # Add a job to the queue
   def queue_job!
-    logger.debug("***** Image(#{self.id})#queue_job!")
+    logger.debug("***** Graffic(#{self.id})#queue_job!")
     queue.push(self.id)
   end
   
   # Save the image's width and height to the database
   def record_dimensions!
-    logger.debug("***** Image(#{self.id})#record_dimensions!")
+    logger.debug("***** Graffic(#{self.id})#record_dimensions!")
     self.update_attributes(:height => image.rows, :width => image.columns)
   end
   
   # Remove the temp file in the app's temp director
   def remove_moved_file!
-    logger.debug("***** Image(#{self.id})#remove_moved_file!")
+    logger.debug("***** Graffic(#{self.id})#remove_moved_file!")
     FileUtils.rm(tmp_file_path) if File.exists?(tmp_file_path)
   end
   
@@ -244,9 +244,9 @@ private
   
   # Uploads an untouched original
   def save_original!
-    logger.debug("***** Image(#{self.id})#save_original!")
+    logger.debug("***** Graffic(#{self.id})#save_original!")
     if respond_to?(:original)
-      i = Image.new(:file => tmp_file_path, :name => 'original')
+      i = Graffic.new(:file => tmp_file_path, :name => 'original')
       update_attribute(:original, i)
       i.upload_unprocessed
     end
@@ -259,7 +259,7 @@ private
   
   # Upload the file to S3
   def upload!
-    logger.debug("***** Image(#{self.id})#upload!")
+    logger.debug("***** Graffic(#{self.id})#upload!")
     t = rmagick_type
     data = image.to_blob { |i| i.compression = t }
     bucket.put(uploaded_file_path, data, {}, 'public-read')
