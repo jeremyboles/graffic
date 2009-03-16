@@ -1,0 +1,28 @@
+Graffic
+======
+
+Graffic is an ActiveRecord class that helps you work with and attach images to other ActiveRecord records.
+
+
+Example
+======
+
+  # models/profile_photo.rb
+  class ProfilePhoto < Graffic
+    size :medium, :width => 48, :height => 48, :format => :jpg
+  end
+
+  # models/user.rb
+  class User < ActiveRecord
+    has_one :profile_photo
+  end
+
+  # views/users/_edit.html.erb
+  <% form_for @user do |f| %>
+    <% f.fields_for :profile_photo do |p| %>
+      <%= p.label :file, 'Profile Photo' %>
+      <%= p.field_field :file %>
+    <% end %>
+  <% end %>
+    
+Copyright (c) 2009 Jeremy Boles, released under the MIT license
