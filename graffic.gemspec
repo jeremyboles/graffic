@@ -17,4 +17,7 @@ Gem::Specification.new do |s|
   
   s.files = %w(MIT-LICENSE README Rakefile init.rb install.rb lib/graffic.rb tasks/graffic_tasks.rake test/graffic_test.rb test/test_helper.rb uninstall.rb)
   s.test_files = %w(test/graffic_test.rb test/test_helper.rb)
+  
+  s.add_dependency 'state_machine', '0.6.3'
+  s.add_dependency 'rmagick', '2.9.1'
 end
