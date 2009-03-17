@@ -2,6 +2,9 @@
 class Graffic < ActiveRecord::Base
   attr_writer :file
   attr_writer :image
+  cattr_writer :bucket_name
+  cattr_writer :queue_name
+  
   belongs_to :resource, :polymorphic => true
   
   after_create :move
@@ -58,13 +61,13 @@ class Graffic < ActiveRecord::Base
   class << self
     # Returns the bucket for the model
     def bucket
-      @bucket ||= Aws.s3.bucket(bucket_name, true, 'public-read')
+      @bucket ||= Graffic::Aws.s3.bucket(bucket_name, true, 'public-read')
     end
     
     # Change the bucket name from the default
     def bucket_name(name = nil)
-      @bucket_name = name unless name == nil
-      @bucket_name || 'images.missionaries.com'
+      @@bucket_name = name unless name == nil
+      @@bucket_name
     end
     
     # Upload all of the files that have been moved.  This will only work on
@@ -102,13 +105,13 @@ class Graffic < ActiveRecord::Base
     
     # Change the queue name from the default
     def queue_name(name = nil)
-      @queue_name = name unless name == nil
-      @queue_name || 'images'
+      @@queue_name = name unless name == nil
+      @@queue_name || 'graffic'
     end
     
     # Return the model's queue
     def queue
-      @queue ||= Aws.sqs.queue(queue_name, true)
+      @queue ||= Graffic::Aws.sqs.queue(queue_name, true)
     end
     
     # Create a size of the graphic.

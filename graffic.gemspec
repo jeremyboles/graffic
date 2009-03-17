@@ -19,5 +19,6 @@ Gem::Specification.new do |s|
   s.test_files = %w(test/graffic_test.rb test/test_helper.rb)
   
   s.add_dependency 'state_machine', '0.6.3'
+  s.add_dependency 'right_aws', '1.10.0'
   s.add_dependency 'rmagick', '2.9.1'
 end

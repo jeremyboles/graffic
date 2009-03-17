@@ -6,9 +6,9 @@ class CreateGraffics < ActiveRecord::Migration
       t.integer :height, :width
       t.datetime :created_at
     end
-    add_index :images, [:resource_id, :resource_type]
-    add_index :images, [:resource_id, :resource_type, :name]
-    add_index :images, :state
+    add_index :graffics, [:resource_id, :resource_type]
+    add_index :graffics, [:resource_id, :resource_type, :name]
+    add_index :graffics, :state
   end
  
   def self.down
