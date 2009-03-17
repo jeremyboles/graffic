@@ -1,9 +1,12 @@
+CHANGELOG.rdoc
 MIT-LICENSE
-README
+README.rdoc
 Rakefile
+generators/graffic/graffic_generator.rb
+generators/graffic/templates/migration.rb
 init.rb
-install.rb
 lib/graffic.rb
+lib/graffic/aws.rb
 tasks/graffic_tasks.rake
 test/graffic_test.rb
 test/test_helper.rb

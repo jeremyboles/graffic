@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name    = 'graffic'
-  s.version = '0.1.0'
+  s.version = '0.1.1'
   s.date    = '2009-03-16'
   
   s.summary = "Image asset handing for ActiveRecord and Rails"
@@ -13,9 +13,9 @@ Gem::Specification.new do |s|
   s.has_rdoc = true
   s.rdoc_options = ['--main', 'README.rdoc']
   s.rdoc_options << '--inline-source' << '--charset=UTF-8'
-  s.extra_rdoc_files = ['README.rdoc', 'LICENSE', 'CHANGELOG.rdoc']
+  s.extra_rdoc_files = ['README.rdoc', 'MIT-LICENSE', 'CHANGELOG.rdoc']
   
-  s.files = %w(MIT-LICENSE README Rakefile init.rb install.rb lib/graffic.rb tasks/graffic_tasks.rake test/graffic_test.rb test/test_helper.rb uninstall.rb)
+  s.files = %w(CHANGELOG.rdoc MIT-LICENSE README.rdoc Rakefile generators/graffic/graffic_generator.rb generators/graffic/templates/migration.rb init.rb lib/graffic.rb lib/graffic/aws.rb tasks/graffic_tasks.rake test/graffic_test.rb test/test_helper.rb uninstall.rb)
   s.test_files = %w(test/graffic_test.rb test/test_helper.rb)
   
   s.add_dependency 'state_machine', '0.6.3'

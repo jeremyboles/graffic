@@ -1,3 +1,7 @@
+require 'rmagick'
+require 'state_machine'
+require 'graffic/aws'
+
 # Graffic
 class Graffic < ActiveRecord::Base
   attr_writer :file
