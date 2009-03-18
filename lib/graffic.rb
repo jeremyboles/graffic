@@ -2,6 +2,8 @@ require 'rmagick'
 require 'graffic/aws'
 require 'graffic/ext'
 
+require 'graffic/view_helpers'
+
 
 # Graffic is an ActiveRecord class to make dealing with Image assets more enjoyable.
 # Each image is an ActiveRecord object/record and therefor can be attached to other models
@@ -133,7 +135,7 @@ class Graffic < ActiveRecord::Base
     change_state('processed')
   end
   
-  
+  # Returns the processor for the instance
   def processor
     @processor || self.class.processor
   end
@@ -144,6 +146,7 @@ class Graffic < ActiveRecord::Base
     status
   end
   
+  # Save the file and process it immediately. Does to use queues.
   def save_and_process
     if status = save
       move_without_queue!
@@ -153,6 +156,7 @@ class Graffic < ActiveRecord::Base
     status
   end
   
+  # Returns a size string.  Good for RMagick and image_tag :size
   def size
     "#{width}x#{height}"
   end
