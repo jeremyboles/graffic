@@ -7,6 +7,8 @@ generators/graffic/templates/migration.rb
 init.rb
 lib/graffic.rb
 lib/graffic/aws.rb
+lib/graffic/ext.rb
+lib/graffic/view_helpers.rb
 tasks/graffic_tasks.rake
 test/graffic_test.rb
 test/test_helper.rb
