@@ -12,16 +12,17 @@ require 'graffic/ext'
 class Graffic < ActiveRecord::Base  
   after_destroy :delete_s3_file
   
-  attr_writer :file
+  attr_writer :file, :processor
   
   before_validation_on_create :set_initial_state
+  
+  belongs_to :resource, :polymorphic => true
 
   class_inheritable_accessor :bucket_name, :processor
   class_inheritable_accessor :format, :default => 'png'
   class_inheritable_accessor :process_queue_name, :default => 'graffic_process'
   class_inheritable_accessor :upload_queue_name, :default => 'graffic_upload'
   class_inheritable_accessor :tmp_dir, :default => RAILS_ROOT + '/tmp/graffics'
-  class_inheritable_array :processors
   class_inheritable_hash :versions
   
   validate_on_create :file_was_given
@@ -58,8 +59,7 @@ class Graffic < ActiveRecord::Base
     end
     
     def process(&block)
-      self.processors ||= []
-      self.processors.insert(0, block) if block_given?
+      self.processor = block if block_given?
     end
     
     def inherited(subclass)
@@ -70,6 +70,11 @@ class Graffic < ActiveRecord::Base
     # The queue for processing images
     def process_queue
       @process_queue ||= Graffic::Aws.sqs.queue(process_queue_name, true)
+    end
+    
+    def size(name, size = {})
+      size.assert_valid_keys(:width, :height)
+      version(name) {|img| img.crop_resized(size[:width], size[:height])}
     end
     
     # The queue for uploading images
@@ -122,10 +127,15 @@ class Graffic < ActiveRecord::Base
   # Process the image without the versions
   def process_without_verions!
     logger.debug("***** Graffic[#{self.id}](#{self.name})#process!")
-    record_image_dimensions_and_format
     run_processors
+    record_image_dimensions_and_format
     upload_image
     change_state('processed')
+  end
+  
+  
+  def processor
+    @processor || self.class.processor
   end
   
   # Move the file if it saved successfully
@@ -211,8 +221,7 @@ protected
       self.versions.each do |version, processor|
         logger.debug("***** Graffic[#{self.id}](#{self.name}): Processing version: #{version}")
         g = Graffic.create(:file => self.image, :name => version.to_s)
-        g.processors ||= []
-        g.processors << processor unless processor.nil?
+        g.processor = processor unless processor.nil?
         g.save_and_process
         self.update_attribute(version, g)
       end
@@ -246,13 +255,10 @@ protected
   end
   
   def run_processors
-    logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processors")
-    logger.debug(self.processors.to_yaml)
-    unless self.processors.blank?
-      self.processors.each do |processor|
-        @image = processor.call(image)
-        raise 'You need to return an image' unless @image.is_a?(Magick::Image)
-      end
+    logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processor")
+    unless self.processor.blank?
+      @image = processor.call(image)
+      raise 'You need to return an image' unless @image.is_a?(Magick::Image)
     end
   end
   
