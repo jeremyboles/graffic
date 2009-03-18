@@ -10,15 +10,19 @@ require 'graffic/ext'
 # Graffic is designed in a way to let slow operating states out of the request cycle, if desired.
 #
 class Graffic < ActiveRecord::Base  
+  after_destroy :delete_s3_file
+  
   attr_writer :file
   
   before_validation_on_create :set_initial_state
 
-  class_inheritable_accessor :bucket_name
+  class_inheritable_accessor :bucket_name, :processor
   class_inheritable_accessor :format, :default => 'png'
   class_inheritable_accessor :process_queue_name, :default => 'graffic_process'
   class_inheritable_accessor :upload_queue_name, :default => 'graffic_upload'
   class_inheritable_accessor :tmp_dir, :default => RAILS_ROOT + '/tmp/graffics'
+  class_inheritable_array :processors
+  class_inheritable_hash :versions
   
   validate_on_create :file_was_given
   
@@ -53,6 +57,11 @@ class Graffic < ActiveRecord::Base
       end
     end
     
+    def process(&block)
+      self.processors ||= []
+      self.processors.insert(0, block) if block_given?
+    end
+    
     def inherited(subclass)
       subclass.has_one(:original, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
       super
@@ -66,6 +75,14 @@ class Graffic < ActiveRecord::Base
     # The queue for uploading images
     def upload_queue
       @upload_queue ||= Graffic::Aws.sqs.queue(upload_queue_name, true)
+    end
+    
+    def version(name, &block)
+      self.versions ||= {}
+      if block_given?
+        self.versions[name] = block || nil
+        has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
+      end
     end
   end
   
@@ -82,20 +99,27 @@ class Graffic < ActiveRecord::Base
   
   # Move the file to the temporary directory
   def move_without_queue!
-    logger.debug("***** Graffic[#{self.id}]#move!")
+    logger.debug("***** Graffic[#{self.id}](#{self.name})#move!")
     if @file.is_a?(Tempfile)
       @file.write(tmp_file_path)
+      change_state('moved')
     elsif @file.is_a?(String)
       FileUtils.cp(@file, tmp_file_path)
+      change_state('moved')
+    elsif @file.is_a?(Magick::Image)
+      @image = @file
+      upload_without_queue!
+      change_state('uploaded')
     end
-    change_state('moved')
   end
   
   # Process the image
   def process!
-    logger.debug("***** Graffic[#{self.id}]#process!")
+    logger.debug("***** Graffic[#{self.id}](#{self.name})#process!")
     record_image_dimensions_and_format
+    run_processors
     upload_image
+    process_versions
     change_state('processed')
   end
   
@@ -126,11 +150,16 @@ class Graffic < ActiveRecord::Base
   
   # Upload the file
   def upload_without_queue!
-    logger.debug("***** Graffic[#{self.id}]#upload!")
+    logger.debug("***** Graffic[#{self.id}](#{self.name})#upload!")
     upload_image
     save_original
     remove_tmp_file
     change_state('uploaded')
+  end
+  
+  # Return the url for displaying the image
+  def url
+    self.s3_key.public_link
   end
   
 protected
@@ -142,18 +171,22 @@ protected
     
   # Save the state without running all the callbacks
   def change_state(state)
-    logger.debug("***** Changing state to: #{state}")
+    logger.debug("***** Graffic[#{self.id}](#{self.name}): Changing state to: #{state}")
     self.state = state
     save(false)
   end
   
+  def delete_s3_file
+    self.s3_key.delete
+  end
+  
   # Make sure a file was given
   def file_was_given
-    errors.add(:file, 'not included.  You need a file when creating.') if @file.nil?
+    self.errors.add(:file, 'not included.  You need a file when creating.') if @file.nil?
   end
   
   def image
-    case self.state
+    @image ||= case self.state
       when 'moved': Magick::Image.read(tmp_file_path).first
       when 'uploaded', 'processed': Magick::Image.from_blob(bucket.get(uploaded_file_path)).first
     end
@@ -166,6 +199,19 @@ protected
   
   def process_queue
     self.class.process_queue
+  end
+  
+  def process_versions
+    unless self.versions.blank?
+      self.versions.each do |version, processor|
+        logger.debug("***** Graffic[#{self.id}](#{self.name}): Processing version: #{version}")
+        g = Graffic.create(:file => self.image, :name => version.to_s)
+        g.processors ||= []
+        g.processors << processor unless processor.nil?
+        g.save_and_process
+        self.update_attribute(version, g)
+      end
+    end
   end
   
   def queue_for_upload
@@ -182,7 +228,7 @@ protected
   end
   
   def remove_tmp_file
-    FileUtils.rm(tmp_file_path)
+    FileUtils.rm(tmp_file_path) if File.exists?(tmp_file_path)
   end
   
   # Returns a RMagick constant for the type of image
@@ -194,12 +240,27 @@ protected
     end
   end
   
+  def run_processors
+    logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processors")
+    logger.debug(self.processors.to_yaml)
+    unless self.processors.blank?
+      self.processors.each do |processor|
+        @image = processor.call(image)
+        raise 'You need to return an image' unless @image.is_a?(Magick::Image)
+      end
+    end
+  end
+  
+  def s3_key
+    @s3_key ||= bucket.key(uploaded_file_path)
+  end
+  
   def save_original
-    logger.debug('Saving Original')
     if respond_to?(:original)
-      i = Graffic.new(:file => tmp_file_path, :name => 'original')
-      i.save_and_process
-      update_attribute(:original, i)
+      logger.debug("***** Graffic[#{self.id}](#{self.name}): Saving Original")
+      g = Graffic.new(:file => tmp_file_path, :name => 'original')
+      g.save_and_process
+      self.update_attribute(:original, g)
     end
   end
 
@@ -208,12 +269,13 @@ protected
     self.state = 'received' unless @file.nil?
   end
   
-  def upload_queue
-    self.class.upload_queue
-  end
-  
   def tmp_file_path
     self.tmp_dir + "/#{id}.tmp"
+  end
+  
+  # Return the path on S3 for the file (the key name, essentially)
+  def uploaded_file_path
+    "#{self.class.name.tableize}/#{id}.#{extension}"
   end
   
   # Upload the image
@@ -223,9 +285,8 @@ protected
     bucket.put(uploaded_file_path, data, {}, 'public-read')
   end
   
-  # Return the path on S3 for the file (the key name, essentially)
-  def uploaded_file_path
-    "#{self.class.name.tableize}/#{id}.#{extension}"
+  def upload_queue
+    self.class.upload_queue
   end
 
   create_tmp_dir
