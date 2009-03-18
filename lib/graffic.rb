@@ -156,6 +156,15 @@ class Graffic < ActiveRecord::Base
     status
   end
   
+  def save_and_process_without_versions
+    if status = save
+      move_without_queue!
+      upload_without_queue!
+      process_without_verions!
+    end
+    status
+  end
+  
   # Returns a size string.  Good for RMagick and image_tag :size
   def size
     "#{width}x#{height}"
