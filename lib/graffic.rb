@@ -115,11 +115,16 @@ class Graffic < ActiveRecord::Base
   
   # Process the image
   def process!
+    process_without_verions!
+    process_versions
+  end
+  
+  # Process the image without the versions
+  def process_without_verions!
     logger.debug("***** Graffic[#{self.id}](#{self.name})#process!")
     record_image_dimensions_and_format
     run_processors
     upload_image
-    process_versions
     change_state('processed')
   end
   
