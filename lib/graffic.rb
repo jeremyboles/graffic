@@ -202,7 +202,7 @@ private
   # If its a S3 Key, we'll write that file's date to our tmp directory
   def move!
     if @file.is_a?(Tempfile)
-      FileUtils.mv(@file.path, tmp_file_path)
+      @file.write(tmp_file_path)
     elsif @file.is_a?(String)
       FileUtils.cp(@file, tmp_file_path)
     end
