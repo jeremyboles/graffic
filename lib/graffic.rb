@@ -1,66 +1,26 @@
 require 'rmagick'
-require 'state_machine'
 require 'graffic/aws'
+require 'graffic/ext'
 
-# Graffic
-class Graffic < ActiveRecord::Base
+
+# Graffic is an ActiveRecord class to make dealing with Image assets more enjoyable.
+# Each image is an ActiveRecord object/record and therefor can be attached to other models
+# through ActiveRecord's normal has_one and has_many methods.
+# A Graffic record progresses through four states: received, moved, uploaded and processed.
+# Graffic is designed in a way to let slow operating states out of the request cycle, if desired.
+#
+class Graffic < ActiveRecord::Base  
   attr_writer :file
-  attr_writer :image
-  cattr_writer :bucket_name
-  cattr_writer :queue_name
   
-  belongs_to :resource, :polymorphic => true
+  before_validation_on_create :set_initial_state
+
+  class_inheritable_accessor :bucket_name
+  class_inheritable_accessor :format, :default => 'png'
+  class_inheritable_accessor :process_queue_name, :default => 'graffic_process'
+  class_inheritable_accessor :upload_queue_name, :default => 'graffic_upload'
+  class_inheritable_accessor :tmp_dir, :default => RAILS_ROOT + '/tmp/graffics'
   
-  after_create :move
-  after_destroy :delete_s3_file
-  
-  # We're using the state machine to keep track of what stage of photo
-  # processing we're at. Here are the states:
-  # 
-  # received -> moved -> uploaded -> processed
-  #
-  state_machine :state, :initial => :received do
-    before_transition :to => :moved,      :do => :move!
-    before_transition :to => :uploaded,   :do => :save_original!
-    before_transition :from => :moved,    :do => :upload!
-    before_transition :to => :processed,  :do => :process!
-    
-    after_transition :from => :moved,   :do => :remove_moved_file!
-    after_transition :to => :uploaded,  :do => :queue_job!
-    after_transition :to => :processed, :from => :uploaded, :do => :create_sizes!
-    after_transition :to => :processed, :do => :record_dimensions!
-    
-    event :move do
-      transition :to => :moved, :from => :received
-    end
-    
-    event :upload do
-      transition :to => :uploaded, :from => :moved
-    end
-    
-    event :upload_unprocessed do
-      transition :to => :processed, :from => :moved
-    end
-    
-    event :process do
-      transition :to => :processed, :from => :uploaded
-    end
-    
-    # Based on which state we're at, we'll need to pull the image from a different are
-    state :moved do
-      # If it hasn't been moved, we'll need to pull it from the local file system
-      def image
-        @image ||= Magick::Image.read(tmp_file_path).first
-      end
-    end
-    
-    state :uploaded, :processed do
-      # If it's been uploaded and procesed, grab it from S3
-      def image
-        @image ||= Magick::Image.from_blob(bucket.get(uploaded_file_path)).first
-      end
-    end
-  end
+  validate_on_create :file_was_given
   
   class << self
     # Returns the bucket for the model
@@ -68,213 +28,205 @@ class Graffic < ActiveRecord::Base
       @bucket ||= Graffic::Aws.s3.bucket(bucket_name, true, 'public-read')
     end
     
-    # Change the bucket name from the default
-    def bucket_name(name = nil)
-      @@bucket_name = name unless name == nil
-      @@bucket_name
+    def create_tmp_dir
+      FileUtils.mkdir(tmp_dir) unless File.exists?(tmp_dir)
     end
     
-    # Upload all of the files that have been moved.  This will only work on
-    # local files.
-    # TODO: Make this work only on file system that the file was used on
-    def handle_moved!
-      image = first(:conditions => { :state => 'moved' })
-      return if image.nil?
-      image.upload 
-    end
-    
-    # Process all of the the uploaded files that are in the queue
-    def handle_uploaded!
-      message = queue.pop
-      return if message.nil?
-      image = find(message.body)
-      image.process
-      message.body
-    rescue
-      true
-    end
-    
-    def inherited(child)
-      child.has_one(:original, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
-      super
-    end
-    
-    def process(&block)
-      if block_given?
-        @process = block
-      else
-        return @process
+    # Handle the first message in toe process queue
+    def handle_top_in_process_queue!
+      if message = process_queue.receive
+        data = YAML.load(message.to_s)
+        return unless record = find(data[:id])
+        record.process!
+        message.delete
       end
     end
     
-    # Change the queue name from the default
-    def queue_name(name = nil)
-      @@queue_name = name unless name == nil
-      @@queue_name || 'graffic'
+    # Handles the first message in the upload queue
+    def handle_top_in_upload_queue!
+      if message = upload_queue.receive
+        data = YAML.load(message.to_s)
+        return if data[:hostname] != `hostname`.strip
+        return unless record = find(data[:id])
+        record.upload!
+        message.delete
+      end
     end
     
-    # Return the model's queue
-    def queue
-      @queue ||= Graffic::Aws.sqs.queue(queue_name, true)
+    def inherited(subclass)
+      subclass.has_one(:original, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
+      super
     end
     
-    # Create a size of the graphic.
-    def size(name, size={})
-      size[:format] ||= :png
-      size.assert_valid_keys(:width, :height, :format)
-      
-      @sizes ||= {}
-      @sizes[name] = size
-      
-      has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
+    # The queue for processing images
+    def process_queue
+      @process_queue ||= Graffic::Aws.sqs.queue(process_queue_name, true)
     end
     
-    # Returns all of the version names for the mode
-    def sizes
-      @sizes ||= {}
-    end
-    
-    # Set the image format
-    def format(format = nil)
-      @format = format unless format.nil?
-      @format ||= :png
+    # The queue for uploading images
+    def upload_queue
+      @upload_queue ||= Graffic::Aws.sqs.queue(upload_queue_name, true)
     end
   end
   
-  # Returns a size string
-  def size
-    "#{width}x#{height}"
-  end
-  
-  # Return the url for displaying the image
-  def url
-    key.public_link
-  end
-  
-private
-  # Connivence method for getting the bucket
-  def bucket
-    self.class.bucket
-  end
-  
-  def create_sizes!
-    self.class.sizes.each do |name, size|
-      logger.debug("***** Sizing: #{name}")
-      file_name = "#{tmp_file_path}.#{name}.#{image_extension(size[:format])}"
-      
-      img = image.crop_resized(size[:width], size[:height])
-      img.write(file_name)
-      
-      i = Graffic.create(:file => file_name, :format => size[:format].to_s, :name => name.to_s)
-      update_attribute(name, i)
-      i.upload_unprocessed
-      
-      FileUtils.rm(file_name)
-    end
-  end
-  
-  # Deletes the file from S3
-  def delete_s3_file
-    key.delete
-  end
-  
-  # The formate of the image
+  # The format of the image
   def format
     attributes['format'] || self.class.format
   end
   
-  # Returns true if the file has versions
-  def has_sizes?
-    !self.class.sizes.empty?
-  end
-  
-  def image_extension(atype = nil)
-    (atype || format).to_s
-  end
-  
-  # Return the S3 key for the record
-  def key
-    @s3_key ||= bucket.key(uploaded_file_path)
-  end
-  
-  # If the file is a Tempfile, we'll need to move to the app's tmp directory so
-  # we can insure that it is retrained until we can upload it
-  # If its a S3 Key, we'll write that file's date to our tmp directory
+  # Move the file to the temporary directory
   def move!
+    move_without_queue!
+    queue_for_upload
+  end
+  
+  # Move the file to the temporary directory
+  def move_without_queue!
+    logger.debug("***** Graffic[#{self.id}]#move!")
     if @file.is_a?(Tempfile)
       @file.write(tmp_file_path)
     elsif @file.is_a?(String)
       FileUtils.cp(@file, tmp_file_path)
     end
+    change_state('moved')
   end
   
   # Process the image
   def process!
-    unless self.class.process.nil?
-      @image = self.class.process.call(image)
-      raise 'You need to return an image' unless @image.is_a?(Magick::Image)
-      upload!
+    logger.debug("***** Graffic[#{self.id}]#process!")
+    record_image_dimensions_and_format
+    upload_image
+    change_state('processed')
+  end
+  
+  # Move the file if it saved successfully
+  def save_and_move
+    move! if status = save
+    status
+  end
+  
+  def save_and_process
+    if status = save
+      move_without_queue!
+      upload_without_queue!
+      process!
+    end
+    status
+  end
+  
+  def size
+    "#{width}x#{height}"
+  end
+  
+  # Upload the file
+  def upload!
+    upload_without_queue!
+    queue_for_processing
+  end
+  
+  # Upload the file
+  def upload_without_queue!
+    logger.debug("***** Graffic[#{self.id}]#upload!")
+    upload_image
+    save_original
+    remove_tmp_file
+    change_state('uploaded')
+  end
+  
+protected
+
+  # Connivence method for getting the bucket
+  def bucket
+    self.class.bucket
+  end
+    
+  # Save the state without running all the callbacks
+  def change_state(state)
+    logger.debug("***** Changing state to: #{state}")
+    self.state = state
+    save(false)
+  end
+  
+  # Make sure a file was given
+  def file_was_given
+    errors.add(:file, 'not included.  You need a file when creating.') if @file.nil?
+  end
+  
+  def image
+    case self.state
+      when 'moved': Magick::Image.read(tmp_file_path).first
+      when 'uploaded', 'processed': Magick::Image.from_blob(bucket.get(uploaded_file_path)).first
     end
   end
   
-  # Connivence method for getting the queue
-  def queue
-    self.class.queue
+  # Return the file extension based on the type
+  def extension(atype = nil)
+    (atype || format).to_s
   end
   
-  # Add a job to the queue
-  def queue_job!
-    logger.debug("***** Graffic(#{self.id})#queue_job!")
-    queue.push(self.id)
+  def process_queue
+    self.class.process_queue
   end
   
-  # Save the image's width and height to the database
-  def record_dimensions!
-    logger.debug("***** Graffic(#{self.id})#record_dimensions!")
-    self.update_attributes(:height => image.rows, :width => image.columns)
+  def queue_for_upload
+    self.upload_queue.push({ :id => self.id, :hostname => `hostname`.strip }.to_yaml)
   end
   
-  # Remove the temp file in the app's temp director
-  def remove_moved_file!
-    logger.debug("***** Graffic(#{self.id})#remove_moved_file!")
-    FileUtils.rm(tmp_file_path) if File.exists?(tmp_file_path)
+  def queue_for_processing
+    self.process_queue.push({ :id => self.id }.to_yaml)
+  end
+  
+  def record_image_dimensions_and_format
+    self.height, self.width, self.format = image.rows, image.columns, self.format
+    save(false)
+  end
+  
+  def remove_tmp_file
+    FileUtils.rm(tmp_file_path)
   end
   
   # Returns a RMagick constant for the type of image
   def rmagick_type(atype = nil)
-    return case (atype || format).to_sym
+    return case (atype || self.format).to_sym
       when :gif then Magick::LZWCompression
       when :jpg then Magick::JPEGCompression
       when :png then Magick::ZipCompression
     end
   end
   
-  # Uploads an untouched original
-  def save_original!
-    logger.debug("***** Graffic(#{self.id})#save_original!")
+  def save_original
+    logger.debug('Saving Original')
     if respond_to?(:original)
       i = Graffic.new(:file => tmp_file_path, :name => 'original')
+      i.save_and_process
       update_attribute(:original, i)
-      i.upload_unprocessed
     end
   end
-  
-  # Returns the path to the file in the app's tmp directory
-  def tmp_file_path
-    RAILS_ROOT + "/tmp/images/#{id}.tmp"
+
+  # If we got a new file, we need to start over with the state
+  def set_initial_state
+    self.state = 'received' unless @file.nil?
   end
   
-  # Upload the file to S3
-  def upload!
-    logger.debug("***** Graffic(#{self.id})#upload!")
-    t = rmagick_type
+  def upload_queue
+    self.class.upload_queue
+  end
+  
+  def tmp_file_path
+    self.tmp_dir + "/#{id}.tmp"
+  end
+  
+  # Upload the image
+  def upload_image
+    t = self.rmagick_type
     data = image.to_blob { |i| i.compression = t }
     bucket.put(uploaded_file_path, data, {}, 'public-read')
   end
   
   # Return the path on S3 for the file (the key name, essentially)
   def uploaded_file_path
-    "#{self.class.name.tableize}/#{id}.#{image_extension}"
+    "#{self.class.name.tableize}/#{id}.#{extension}"
   end
-  
+
+  create_tmp_dir
 end # Graffic
