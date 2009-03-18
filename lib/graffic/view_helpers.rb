@@ -1,5 +1,5 @@
 module Graffic::ViewHelpers
-  def graffic_tag(graffic, version_or_opts = {}, opts = nil)
+  def graffic_tag(graffic, version_or_opts = {}, opts = {})
     if graffic
       if version_or_opts.is_a?(Symbol)
         graffic_tag(graffic.try(version_or_opts), opts)
