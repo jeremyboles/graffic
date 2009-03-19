@@ -270,7 +270,7 @@ protected
   def run_processors
     logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processor")
     unless self.processor.blank?
-      @image = processor.call(image)
+      @image = processor.call(image, self)
       raise 'You need to return an image' unless @image.is_a?(Magick::Image)
     end
   end
