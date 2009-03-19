@@ -98,6 +98,13 @@ class Graffic < ActiveRecord::Base
     attributes['format'] || self.class.format
   end
   
+  def image
+    @image ||= case self.state
+      when 'moved': Magick::Image.read(tmp_file_path).first
+      when 'uploaded', 'processed': Magick::Image.from_blob(bucket.get(uploaded_file_path)).first
+    end
+  end
+  
   # Move the file to the temporary directory
   def move!
     move_without_queue!
@@ -211,13 +218,6 @@ protected
   # Make sure a file was given
   def file_was_given
     self.errors.add(:file, 'not included.  You need a file when creating.') if @file.nil?
-  end
-  
-  def image
-    @image ||= case self.state
-      when 'moved': Magick::Image.read(tmp_file_path).first
-      when 'uploaded', 'processed': Magick::Image.from_blob(bucket.get(uploaded_file_path)).first
-    end
   end
   
   # Return the file extension based on the type
