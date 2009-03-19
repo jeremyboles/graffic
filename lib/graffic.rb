@@ -131,7 +131,7 @@ class Graffic < ActiveRecord::Base
       FileUtils.cp(@file, tmp_file_path)
       change_state('moved')
     elsif @file.is_a?(Magick::Image)
-      @image = @file
+      @image = @file.try(:first) || @file
       upload_without_queue!
       change_state('uploaded')
     end
