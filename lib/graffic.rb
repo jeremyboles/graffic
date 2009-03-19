@@ -43,9 +43,14 @@ class Graffic < ActiveRecord::Base
     def handle_top_in_process_queue!
       if message = process_queue.receive
         data = YAML.load(message.to_s)
-        return unless record = find(data[:id])
-        record.process!
-        message.delete
+        begin
+          record = find(data[:id])
+          record.process!
+        rescue ActiveRecord::RecordNotFound
+          return 'Not found'
+        ensure
+          message.delete
+        end
       end
     end
     
@@ -54,9 +59,14 @@ class Graffic < ActiveRecord::Base
       if message = upload_queue.receive
         data = YAML.load(message.to_s)
         return if data[:hostname] != `hostname`.strip
-        return unless record = find(data[:id])
-        record.upload!
-        message.delete
+        begin 
+          record = find(data[:id])
+          record.upload!
+        rescue ActiveRecord::RecordNotFound
+          return 'Not found'
+        ensure
+          message.delete
+        end
       end
     end
     
