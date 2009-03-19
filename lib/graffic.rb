@@ -86,7 +86,10 @@ class Graffic < ActiveRecord::Base
     
     def size(name, size = {})
       size.assert_valid_keys(:width, :height)
-      version(name) {|img| img.crop_resized(size[:width], size[:height])}
+      version(name) do |img|
+        img = img.first if img.respond_to?(:first)
+        img.crop_resized(size[:width], size[:height])
+      end
     end
     
     # The queue for uploading images
@@ -131,7 +134,7 @@ class Graffic < ActiveRecord::Base
       FileUtils.cp(@file, tmp_file_path)
       change_state('moved')
     elsif @file.is_a?(Magick::Image)
-      @image = @file.try(:first) || @file
+      @image = @file
       upload_without_queue!
       change_state('uploaded')
     end
@@ -280,7 +283,7 @@ protected
   def run_processors
     logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processor")
     unless self.processor.blank?
-      @image = processor.call(image.try(:first) || image, self)
+      @image = processor.call(image, self)
       raise 'You need to return an image' unless @image.is_a?(Magick::Image)
     end
   end

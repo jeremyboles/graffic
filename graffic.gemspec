@@ -1,7 +1,7 @@
 Gem::Specification.new do |s|
   s.name    = 'graffic'
-  s.version = '0.2.6'
-  s.date    = '2009-03-18'
+  s.version = '0.2.7'
+  s.date    = '2009-03-19'
   
   s.summary = "Image asset handing for ActiveRecord and Rails"
   s.description = "Graffic is an ActiveRecord class that helps you work with and attach images to other ActiveRecord records."
