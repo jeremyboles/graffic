@@ -174,6 +174,14 @@ class Graffic < ActiveRecord::Base
     @processors || self.class.processors
   end
   
+  def reprocess
+    if respond_to?(:original)
+      @image = self.original.image
+      change_state('uploaded')
+      process
+    end
+  end
+  
   # Returns a size string.  Good for RMagick and image_tag :size
   def size
     "#{width}x#{height}"
