@@ -12,20 +12,23 @@ require 'graffic/view_helpers'
 # Graffic is designed in a way to let slow operating states out of the request cycle, if desired.
 #
 class Graffic < ActiveRecord::Base  
+  after_create :move
   after_destroy :delete_s3_file
-  
-  attr_writer :file, :processor
   
   before_validation_on_create :set_initial_state
   
   belongs_to :resource, :polymorphic => true
 
-  class_inheritable_accessor :bucket_name, :processor
+  class_inheritable_accessor :bucket_name
   class_inheritable_accessor :format, :default => 'png'
   class_inheritable_accessor :process_queue_name, :default => 'graffic_process'
   class_inheritable_accessor :upload_queue_name, :default => 'graffic_upload'
+  class_inheritable_accessor :should_process_versions, :use_queue, :default => true
   class_inheritable_accessor :tmp_dir, :default => RAILS_ROOT + '/tmp/graffics'
-  class_inheritable_hash :versions
+  class_inheritable_accessor :processors, :default => []
+  class_inheritable_accessor :versions, :default => {}
+  
+  attr_writer :file, :processors
   
   validate_on_create :file_was_given
   
@@ -35,6 +38,7 @@ class Graffic < ActiveRecord::Base
       @bucket ||= Graffic::Aws.s3.bucket(bucket_name, true, 'public-read')
     end
     
+    # Create the tmp dir to store files until we upload them
     def create_tmp_dir
       FileUtils.mkdir(tmp_dir) unless File.exists?(tmp_dir)
     end
@@ -45,7 +49,7 @@ class Graffic < ActiveRecord::Base
         data = YAML.load(message.to_s)
         begin
           record = find(data[:id])
-          record.process!
+          record.process
         rescue ActiveRecord::RecordNotFound
           return 'Not found'
         ensure
@@ -55,13 +59,14 @@ class Graffic < ActiveRecord::Base
     end
     
     # Handles the first message in the upload queue
+    # TODO: Figure out a better way to handle messages when records aren't there
     def handle_top_in_upload_queue!
       if message = upload_queue.receive
         data = YAML.load(message.to_s)
         return if data[:hostname] != `hostname`.strip
         begin 
           record = find(data[:id])
-          record.upload!
+          record.upload
         rescue ActiveRecord::RecordNotFound
           return 'Not found'
         ensure
@@ -70,10 +75,13 @@ class Graffic < ActiveRecord::Base
       end
     end
     
+    # DSL method for processing images
     def process(&block)
-      self.processor = block if block_given?
+      self.processors ||= []
+      self.processors << block if block_given?
     end
     
+    # When we create a new type of Graffic, make sure we save the original
     def inherited(subclass)
       subclass.has_one(:original, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => 'original' })
       super
@@ -84,10 +92,11 @@ class Graffic < ActiveRecord::Base
       @process_queue ||= Graffic::Aws.sqs.queue(process_queue_name, true)
     end
     
+    # DSL method for making thumbnails
     def size(name, size = {})
       size.assert_valid_keys(:width, :height)
       version(name) do |img|
-        img = img.first if img.respond_to?(:first)
+        logger.debug("***** Resizing: #{size[:width]}x#{size[:height]}")
         img.crop_resized(size[:width], size[:height])
       end
     end
@@ -97,12 +106,12 @@ class Graffic < ActiveRecord::Base
       @upload_queue ||= Graffic::Aws.sqs.queue(upload_queue_name, true)
     end
     
+    # DSL method for declaring a version of an image
     def version(name, &block)
-      self.versions ||= {}
-      if block_given?
-        self.versions[name] = block || nil
-        has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
-      end
+      self.versions[name] ||= []
+      self.versions[name] << block if block_given?
+      has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
+      logger.debug("***** Adding Version: #{name.to_s} : #{block.to_s}")
     end
   end
   
@@ -111,6 +120,7 @@ class Graffic < ActiveRecord::Base
     attributes['format'] || self.class.format
   end
   
+  # Return an RMagick image, based on the state of image
   def image
     @image ||= case self.state
       when 'moved': Magick::Image.read(tmp_file_path).first
@@ -119,70 +129,45 @@ class Graffic < ActiveRecord::Base
   end
   
   # Move the file to the temporary directory
-  def move!
-    move_without_queue!
-    queue_for_upload
+  def move
+    return unless self.state == 'received'
+    logger.debug("***** Graffic[#{self.id}](#{self.name})#move!")
+    if @file.is_a?(Tempfile) # Uploaded File
+      @file.write(tmp_file_path)
+    elsif @file.is_a?(String) # String representing a file's location
+      FileUtils.cp(@file.strip, tmp_file_path)
+    elsif @file.is_a?(Magick::Image) # An actually RMagick file
+      @image = @file
+      self.use_queue = false
+      change_state('uploaded')
+      process
+      return
+    end
+    
+    change_state('moved')
+    use_queue? ? queue_for_upload : upload
   end
   
-  # Move the file to the temporary directory
-  def move_without_queue!
-    logger.debug("***** Graffic[#{self.id}](#{self.name})#move!")
-    if @file.is_a?(Tempfile)
-      @file.write(tmp_file_path)
-      change_state('moved')
-    elsif @file.is_a?(String)
-      FileUtils.cp(@file, tmp_file_path)
-      change_state('moved')
-    elsif @file.is_a?(Magick::Image)
-      @image = @file
-      upload_without_queue!
-      change_state('uploaded')
-    end
+  attr_accessor :should_process_versions
+  def should_process_versions?
+    should_process_versions.nil? ? self.class.should_process_versions : should_process_versions
   end
   
   # Process the image
-  def process!
-    process_without_verions!
-    process_versions
-  end
-  
-  # Process the image without the versions
-  def process_without_verions!
+  def process
+    return unless self.state == 'uploaded'
     logger.debug("***** Graffic[#{self.id}](#{self.name})#process!")
     run_processors
     record_image_dimensions_and_format
     upload_image
     change_state('processed')
+    
+    process_versions if should_process_versions?
   end
-  
+
   # Returns the processor for the instance
-  def processor
-    @processor || self.class.processor
-  end
-  
-  # Move the file if it saved successfully
-  def save_and_move
-    move! if status = save
-    status
-  end
-  
-  # Save the file and process it immediately. Does to use queues.
-  def save_and_process
-    if status = save
-      move_without_queue!
-      upload_without_queue!
-      process!
-    end
-    status
-  end
-  
-  def save_and_process_without_versions
-    if status = save
-      move_without_queue!
-      upload_without_queue!
-      process_without_verions!
-    end
-    status
+  def processors
+    @processors || self.class.processors
   end
   
   # Returns a size string.  Good for RMagick and image_tag :size
@@ -191,23 +176,25 @@ class Graffic < ActiveRecord::Base
   end
   
   # Upload the file
-  def upload!
-    upload_without_queue!
-    queue_for_processing
-  end
-  
-  # Upload the file
-  def upload_without_queue!
+  def upload
+    return unless self.state == 'moved'
     logger.debug("***** Graffic[#{self.id}](#{self.name})#upload!")
     upload_image
     save_original
     remove_tmp_file
+    
     change_state('uploaded')
+    use_queue? ? queue_for_processing : process
   end
   
   # Return the url for displaying the image
   def url
     self.s3_key.public_link
+  end
+  
+  attr_accessor :use_queue
+  def use_queue?
+    use_queue.nil? ? self.class.use_queue : use_queue
   end
   
 protected
@@ -243,15 +230,12 @@ protected
   end
   
   def process_versions
-    unless self.versions.blank?
-      self.versions.each do |version, processor|
-        logger.debug("***** Graffic[#{self.id}](#{self.name}): Processing version: #{version}")
-        g = Graffic.create(:file => self.image, :name => version.to_s)
-        g.processor = processor unless processor.nil?
-        g.save_and_process
-        self.update_attribute(version, g)
-      end
-    end
+    self.versions.each do |version, processors|
+      logger.debug("***** Graffic[#{self.id}](#{self.name}): Processing version: #{version} (#{processors.size} processors)")
+      g = Graffic.new(:file => self.image, :name => version.to_s, :use_queue => false)
+      g.processors += processors unless processors.nil?
+      self.update_attribute(version, g)
+    end unless self.versions.blank?
   end
   
   def queue_for_upload
@@ -281,11 +265,17 @@ protected
   end
   
   def run_processors
-    logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processor")
-    unless self.processor.blank?
-      @image = processor.call(image, self)
+    logger.debug("***** Graffic[#{self.id}](#{self.name}): Running processor (#{self.processors.try(:size)} processors)")
+    self.processors.each do |processor|
+      img = self.image
+      img = img.first if img.respond_to?(:first)
+      @image =  case processor.arity # Pass in the record itself, if the block wants it
+        when 1: processor.call(img)
+        when 2: processor.call(img, self)
+      end
       raise 'You need to return an image' unless @image.is_a?(Magick::Image)
-    end
+      logger.debug("Returned Image Size: #{@image.columns}x#{@image.rows}")
+    end unless self.processors.blank?
   end
   
   def s3_key
@@ -295,8 +285,7 @@ protected
   def save_original
     if respond_to?(:original)
       logger.debug("***** Graffic[#{self.id}](#{self.name}): Saving Original")
-      g = Graffic.new(:file => tmp_file_path, :name => 'original')
-      g.save_and_process
+      g = Graffic.new(:file => tmp_file_path, :name => 'original', :use_queue => false)
       self.update_attribute(:original, g)
     end
   end
