@@ -1,6 +1,6 @@
 module Graffic::ViewHelpers
   def graffic_tag(graffic, version_or_opts = {}, opts = {})
-    if graffic
+    if graffic && graffic.state.eql?('processed')
       if version_or_opts.is_a?(Symbol)
         graffic_tag(graffic.try(version_or_opts), opts)
       else

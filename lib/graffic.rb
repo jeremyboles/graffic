@@ -11,6 +11,8 @@ require 'graffic/view_helpers'
 # A Graffic record progresses through four states: received, moved, uploaded and processed.
 # Graffic is designed in a way to let slow operating states out of the request cycle, if desired.
 #
+# TODO: Figure out how to make this read-only
+#
 class Graffic < ActiveRecord::Base  
   after_create :move
   after_destroy :delete_s3_file
@@ -95,10 +97,7 @@ class Graffic < ActiveRecord::Base
     # DSL method for making thumbnails
     def size(name, size = {})
       size.assert_valid_keys(:width, :height)
-      version(name) do |img|
-        logger.debug("***** Resizing: #{size[:width]}x#{size[:height]}")
-        img.crop_resized(size[:width], size[:height])
-      end
+      version(name) { |img| img.crop_resized(size[:width], size[:height]) }
     end
     
     # The queue for uploading images
@@ -111,7 +110,6 @@ class Graffic < ActiveRecord::Base
       self.versions[name] ||= []
       self.versions[name] << block if block_given?
       has_one(name, :class_name => 'Graffic', :as => :resource, :dependent => :destroy, :conditions => { :name => name.to_s })
-      logger.debug("***** Adding Version: #{name.to_s} : #{block.to_s}")
     end
   end
   
@@ -130,18 +128,24 @@ class Graffic < ActiveRecord::Base
   
   # Move the file to the temporary directory
   def move
+    logger.debug("***** Moving? #{self.state}")
     return unless self.state == 'received'
     logger.debug("***** Graffic[#{self.id}](#{self.name})#move!")
+    logger.debug("***** File type: #{@file.class.name}")
     if @file.is_a?(Tempfile) # Uploaded File
-      @file.write(tmp_file_path)
+      FileUtils.cp(@file.path, tmp_file_path)
+      logger.debug("***** Moving file: #{@file.path}, #{tmp_file_path}")
     elsif @file.is_a?(String) # String representing a file's location
       FileUtils.cp(@file.strip, tmp_file_path)
+      logger.debug("***** Moving file: #{@file.strip}, #{tmp_file_path}")
     elsif @file.is_a?(Magick::Image) # An actually RMagick file
       @image = @file
       self.use_queue = false
       change_state('uploaded')
       process
       return
+    else
+      raise "Don't know how to handle file type #{@file.class.name}"
     end
     
     change_state('moved')
