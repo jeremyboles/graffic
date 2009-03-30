@@ -200,8 +200,12 @@ class Graffic < ActiveRecord::Base
   end
   
   # Return the url for displaying the image
-  def url
-    self.s3_key.public_link
+  def url(calculate = false)
+    if calculate
+      self.s3_key.public_link
+    else
+      "http://#{self.bucket}/#{uploaded_file_path}"
+    end
   end
   
   attr_accessor :use_queue
