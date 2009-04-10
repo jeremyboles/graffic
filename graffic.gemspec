@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name    = 'graffic'
-  s.version = '0.3.4'
+  s.version = '0.3.5'
   s.date    = '2009-03-19'
   
   s.summary = "Image asset handing for ActiveRecord and Rails"

@@ -46,7 +46,7 @@ class Graffic < ActiveRecord::Base
     end
     
     # Handle the first message in toe process queue
-    def handle_top_in_process_queue!
+    def handle_top_in_process_queue
       if message = process_queue.receive
         data = YAML.load(message.to_s)
         begin
@@ -62,7 +62,7 @@ class Graffic < ActiveRecord::Base
     
     # Handles the first message in the upload queue
     # TODO: Figure out a better way to handle messages when records aren't there
-    def handle_top_in_upload_queue!
+    def handle_top_in_upload_queue
       if message = upload_queue.receive
         data = YAML.load(message.to_s)
         return if data[:hostname] != `hostname`.strip
